@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Box Breathing</title>
+<meta name="description" content="A simple box breathing timer: 4 seconds in, 4 hold, 4 out, 4 hold. Counts your cycles.">
+<script>
+  // Apply saved theme before first paint to avoid a light-mode flash
+  try { var t = localStorage.getItem('box-breathing-theme'); if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='10' y='10' width='44' height='44' rx='6' fill='none' stroke='%232dd4bf' stroke-width='6'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f4f7fb;
+    --surface: #ffffff;
+    --text: #12202f;
+    --muted: #5b6b7d;
+    --track: #d5dde8;
+    --inhale: #0ea5a4;
+    --hold: #7c6cf0;
+    --exhale: #e0894a;
+    --accent: var(--inhale);
+    --btn-text: #ffffff;
+    --warn: #b45309;
+    --warn-bg: rgba(180, 83, 9, .10);
+    --shadow: 0 10px 40px rgba(18, 32, 47, .08);
+  }
+  /* Dark: follows the system unless the user explicitly picked light */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b1422;
+      --surface: #111e31;
+      --text: #e8eef6;
+      --muted: #94a3b8;
+      --track: #26364d;
+      --inhale: #2dd4bf;
+      --hold: #a99dff;
+      --exhale: #fba85f;
+      --btn-text: #07131f;
+    --warn: #fbbf24;
+    --warn-bg: rgba(251, 191, 36, .12);
+      --shadow: 0 10px 40px rgba(0, 0, 0, .35);
+      color-scheme: dark;
+    }
+  }
+  /* Dark: explicitly chosen via the toggle */
+  :root[data-theme="dark"] {
+    --bg: #0b1422;
+    --surface: #111e31;
+    --text: #e8eef6;
+    --muted: #94a3b8;
+    --track: #26364d;
+    --inhale: #2dd4bf;
+    --hold: #a99dff;
+    --exhale: #fba85f;
+    --btn-text: #07131f;
+    --warn: #fbbf24;
+    --warn-bg: rgba(251, 191, 36, .12);
+    --shadow: 0 10px 40px rgba(0, 0, 0, .35);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    min-height: 100vh;
+    min-height: 100dvh;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+  }
+  main {
+    position: relative;
+    width: 100%;
+    max-width: 620px;
+    /* Fill the window (up to a sane max) so everything fits without scrolling */
+    min-height: min(calc(100vh - 24px), 880px);
+    min-height: min(calc(100dvh - 24px), 880px);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-radius: 24px;
+    box-shadow: var(--shadow);
+    padding: 18px 16px 16px;
+    text-align: center;
+  }
+  h1 { margin: 0; font-size: 1.4rem; letter-spacing: .01em; }
+  .sub { margin: 2px 0 0; color: var(--muted); font-size: .92rem; }
+
+  /* The box takes whatever vertical space is left; the square fits inside it */
+  .stage-wrap {
+    flex: 1 1 0;
+    min-height: 200px;
+    margin: 6px 0;
+    container-type: size;
+    display: grid;
+    place-items: center;
+  }
+  .stage { position: relative; width: min(100%, 50vh); width: min(100cqw, 100cqh); aspect-ratio: 1; }
+  .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .edge { stroke: var(--track); stroke-width: 6; stroke-linecap: round; fill: none; }
+  .trail { stroke: var(--accent); stroke-width: 6; stroke-linecap: round; fill: none; }
+  .dot { fill: var(--accent); }
+  .dot-halo { fill: var(--accent); opacity: .25; }
+  .orb { fill: var(--accent); opacity: .16; transform-origin: 150px 150px; }
+
+  .center {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .count {
+    font-size: clamp(4rem, 22vw, 7rem);
+    font-size: clamp(3.5rem, 28cqmin, 8rem);
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+  }
+  .count.idle { font-size: clamp(1.8rem, 9vw, 2.6rem); color: var(--muted); font-weight: 600; }
+  .label { margin-top: 8px; font-size: 1.15rem; font-weight: 600; letter-spacing: .02em; }
+  .hint { margin-top: 4px; max-width: 56%; text-align: center; font-size: .9rem; color: var(--muted); line-height: 1.3; }
+  .center.done .count, .center.done .hint { display: none; }
+  .center.done .label { margin-top: 0; font-size: 1.7rem; }
+  /* "Get ready" lead-in: posture + breathing instructions, shown after Start */
+  .center.prep .count { display: none; }
+  .center.prep .label {
+    margin-top: 0; max-width: 66%;
+    font-size: 1.2rem; font-size: clamp(1rem, 5.5cqmin, 1.6rem);
+    line-height: 1.3;
+  }
+  .center.prep .hint { margin-top: 8px; text-transform: uppercase; letter-spacing: .1em; font-size: .75rem; }
+  .fade { animation: fadeIn .6s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .safety { margin-top: 12px; }
+  .safety p { margin: 0; }
+  .safety .caution {
+    color: var(--warn);
+    background: var(--warn-bg);
+    border-radius: 12px;
+    padding: 8px 12px;
+    font-size: .88rem;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+  .safety .note { margin-top: 8px; font-size: .8rem; line-height: 1.45; color: var(--muted); }
+
+  .stats { display: flex; justify-content: center; gap: 12px; margin: 6px 0 12px; }
+  .stat {
+    flex: 1; max-width: 170px;
+    background: var(--bg); border-radius: 14px; padding: 6px 8px;
+  }
+  .stat .v { font-size: 1.5rem; line-height: 1.25; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .bump { animation: bump .5s ease; }
+  @keyframes bump { 40% { transform: scale(1.25); color: var(--accent); } }
+
+  .buttons { display: flex; gap: 12px; }
+  button {
+    flex: 1;
+    font: inherit; font-weight: 600; font-size: 1.05rem;
+    padding: 12px 16px;
+    border-radius: 14px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform .08s ease, opacity .2s ease;
+  }
+  button:active:not(:disabled) { transform: scale(.97); }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .theme-toggle {
+    position: absolute; top: 14px; right: 14px;
+    flex: none; width: 40px; height: 40px; padding: 0;
+    display: grid; place-items: center;
+    background: var(--bg); color: var(--text);
+    border-radius: 50%;
+  }
+  .theme-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #start { background: var(--inhale); color: var(--btn-text); }
+  #stop { background: transparent; color: var(--text); border-color: var(--track); }
+
+  .summary { min-height: 1.4em; margin: 8px 0 0; color: var(--muted); font-size: .9rem; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  @media (prefers-reduced-motion: reduce) { .bump, .fade { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <button id="theme" class="theme-toggle" type="button" aria-label="Switch to dark mode"></button>
+  <h1>Box Breathing</h1>
+  <p class="sub">In 4 &middot; Hold 4 &middot; Out 4 &middot; Hold 4</p>
+
+  <div class="stage-wrap">
+  <div class="stage">
+    <svg viewBox="0 0 300 300" aria-hidden="true">
+      <circle id="orb" class="orb" cx="150" cy="150" r="116"/>
+      <!-- 0 inhale (left, up) | 1 hold (top, right) | 2 exhale (right, down) | 3 hold (bottom, left) -->
+      <line class="edge" x1="20"  y1="280" x2="20"  y2="20"/>
+      <line class="edge" x1="20"  y1="20"  x2="280" y2="20"/>
+      <line class="edge" x1="280" y1="20"  x2="280" y2="280"/>
+      <line class="edge" x1="280" y1="280" x2="20"  y2="280"/>
+      <line id="trail" class="trail" x1="20" y1="280" x2="20" y2="280" opacity="0"/>
+      <circle id="halo" class="dot-halo" cx="20" cy="280" r="17"/>
+      <circle id="dot" class="dot" cx="20" cy="280" r="10"/>
+    </svg>
+    <div id="center" class="center">
+      <div id="count" class="count idle">Ready</div>
+      <div id="label" class="label">Press start</div>
+      <div id="hint" class="hint">In through the nose, out through the mouth</div>
+    </div>
+  </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div id="cycles" class="v">0</div><div class="k">Cycles</div></div>
+    <div class="stat"><div id="time" class="v">0:00</div><div class="k">Time</div></div>
+  </div>
+
+  <div class="buttons">
+    <button id="start" type="button">Start</button>
+    <button id="stop" type="button" disabled>Stop</button>
+  </div>
+
+  <p id="summary" class="summary"></p>
+  <div class="safety">
+    <p class="caution">If you feel dizzy or breathless, stop and breathe normally.</p>
+    <p class="note">Check with a doctor first if you have a heart or respiratory condition or are pregnant.</p>
+  </div>
+  <div id="live" class="sr-only" aria-live="polite"></div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var PHASE_MS = 4000;
+  var PHASES = [
+    { name: 'Breathe in',  hint: 'slowly, through your nose', color: '--inhale' },
+    { name: 'Hold',        hint: 'gently, lungs full',        color: '--hold'   },
+    { name: 'Breathe out', hint: 'slowly, through your mouth', color: '--exhale' },
+    { name: 'Hold',        hint: 'gently, lungs empty',       color: '--hold'   }
+  ];
+  var IDLE_HINT = 'In through the nose, out through the mouth';
+  // "Get ready" lead-in shown after Start, before the first inhale. Not counted in time or cycles.
+  var PREP_STEP_MS = 2500;
+  var PREP_STEPS = [
+    'Sit upright and relax your shoulders',
+    'Breathe in through your nose, out through your mouth'
+  ];
+  var PREP_MS = PREP_STEP_MS * PREP_STEPS.length;
+  // Box corners: bottom-left -> top-left -> top-right -> bottom-right -> bottom-left
+  var CORNERS = [[20, 280], [20, 20], [280, 20], [280, 280], [20, 280]];
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var startBtn = $('start'), stopBtn = $('stop');
+  var countEl = $('count'), labelEl = $('label'), hintEl = $('hint'), centerEl = $('center');
+  var cyclesEl = $('cycles'), timeEl = $('time');
+  var summaryEl = $('summary'), liveEl = $('live');
+  var dot = $('dot'), halo = $('halo'), trail = $('trail'), orb = $('orb');
+  var root = document.documentElement;
+
+  var running = false, t0 = 0, rafId = 0, wakeLock = null;
+  var lastPhaseIdx = -1, lastCount = -1, lastCycles = 0, lastSecond = -1, lastPrepStep = -1;
+
+  function ease(t) { return 0.5 - 0.5 * Math.cos(Math.PI * t); }
+
+  function fmt(sec) {
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  function setAccent(varName) {
+    root.style.setProperty('--accent', 'var(' + varName + ')');
+  }
+
+  function placeDot(x, y) {
+    dot.setAttribute('cx', x); dot.setAttribute('cy', y);
+    halo.setAttribute('cx', x); halo.setAttribute('cy', y);
+  }
+
+  function setOrb(scale) {
+    orb.style.transform = 'scale(' + scale + ')';
+  }
+
+  function tick(now) {
+    if (!running) return;
+    var raw = now - t0;                                 // negative while in the "get ready" lead-in
+
+    if (raw < 0) {
+      var step = Math.max(0, Math.min(PREP_STEPS.length - 1, Math.floor((PREP_MS + raw) / PREP_STEP_MS)));
+      if (step !== lastPrepStep) {
+        lastPrepStep = step;
+        labelEl.textContent = PREP_STEPS[step];
+        hintEl.textContent = 'Get ready';
+        liveEl.textContent = PREP_STEPS[step];
+        labelEl.classList.remove('fade');
+        void labelEl.offsetWidth;
+        labelEl.classList.add('fade');
+      }
+      // Final 0.8s of the lead-in: fade the text and settle the orb to "lungs empty"
+      var left = -raw, FADE_MS = 800;
+      var k = left > FADE_MS ? 0 : 1 - left / FADE_MS;
+      centerEl.style.opacity = k === 0 ? '' : String(1 - k);
+      if (!reduceMotion) setOrb(1 - 0.45 * ease(k));
+      rafId = requestAnimationFrame(tick);
+      return;
+    }
+
+    var elapsed = raw;
+    var idx = Math.floor(elapsed / PHASE_MS);          // phases completed so far
+    var phase = idx % 4;
+    var inPhase = elapsed - idx * PHASE_MS;             // 0..4000
+    var t = inPhase / PHASE_MS;                         // 0..1
+    var count = 4 - Math.floor(inPhase / 1000);         // 4,3,2,1
+    var cycles = Math.floor(idx / 4);                   // full boxes finished
+
+    // Phase change
+    if (idx !== lastPhaseIdx) {
+      lastPhaseIdx = idx;
+      centerEl.style.opacity = '';
+      centerEl.classList.remove('prep');
+      labelEl.classList.remove('fade');
+      labelEl.textContent = PHASES[phase].name;
+      hintEl.textContent = PHASES[phase].hint;
+      setAccent(PHASES[phase].color);
+      liveEl.textContent = PHASES[phase].name + ', ' + PHASES[phase].hint;
+    }
+    // Countdown number
+    if (count !== lastCount) {
+      lastCount = count;
+      countEl.textContent = count;
+    }
+    // Cycle counter
+    if (cycles !== lastCycles) {
+      lastCycles = cycles;
+      cyclesEl.textContent = cycles;
+      cyclesEl.classList.remove('bump');
+      void cyclesEl.offsetWidth;
+      cyclesEl.classList.add('bump');
+    }
+    // Elapsed time
+    var sec = Math.floor(elapsed / 1000);
+    if (sec !== lastSecond) { lastSecond = sec; timeEl.textContent = fmt(sec); }
+
+    // Dot + trail along the active edge
+    var a = CORNERS[phase], b = CORNERS[phase + 1];
+    var x = a[0] + (b[0] - a[0]) * t;
+    var y = a[1] + (b[1] - a[1]) * t;
+    placeDot(x, y);
+    trail.setAttribute('x1', a[0]); trail.setAttribute('y1', a[1]);
+    trail.setAttribute('x2', x);    trail.setAttribute('y2', y);
+    trail.setAttribute('opacity', '1');
+
+    // Breathing orb: grows on inhale, shrinks on exhale, holds otherwise
+    if (!reduceMotion) {
+      var s = phase === 0 ? 0.55 + 0.45 * ease(t)
+            : phase === 1 ? 1
+            : phase === 2 ? 1 - 0.45 * ease(t)
+            : 0.55;
+      setOrb(s);
+    }
+
+    rafId = requestAnimationFrame(tick);
+  }
+
+  async function lockScreen() {
+    try {
+      if ('wakeLock' in navigator && running) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch (e) { /* not supported or denied: no big deal */ }
+  }
+  function unlockScreen() {
+    try { if (wakeLock) wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (running && document.visibilityState === 'visible') lockScreen();
+  });
+
+  function start() {
+    if (running) return;
+    running = true;
+    lastPhaseIdx = -1; lastCount = -1; lastCycles = 0; lastSecond = -1; lastPrepStep = -1;
+    cyclesEl.textContent = '0';
+    timeEl.textContent = '0:00';
+    summaryEl.textContent = '';
+    countEl.classList.remove('idle');
+    $('center').classList.remove('done');
+    $('center').classList.add('prep');
+    setAccent('--inhale');
+    setOrb(1);                                          // settles to "lungs empty" at the end of the lead-in
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    stopBtn.focus({ preventScroll: true });
+    lockScreen();
+    t0 = performance.now() + PREP_MS;                   // the box starts after the lead-in
+    rafId = requestAnimationFrame(tick);
+  }
+
+  // Stop pressed during the lead-in: nothing was breathed yet, so just go back to idle
+  function cancelPrep() {
+    running = false;
+    cancelAnimationFrame(rafId);
+    unlockScreen();
+    centerEl.style.opacity = '';
+    centerEl.classList.remove('prep', 'done');
+    labelEl.classList.remove('fade');
+    countEl.classList.add('idle');
+    countEl.textContent = 'Ready';
+    labelEl.textContent = 'Press start';
+    hintEl.textContent = IDLE_HINT;
+    setOrb(1);
+    liveEl.textContent = 'Cancelled.';
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    startBtn.focus({ preventScroll: true });
+  }
+
+  function stop() {
+    if (!running) return;
+    if (performance.now() < t0) { cancelPrep(); return; }
+    var elapsed = performance.now() - t0;
+    var cycles = Math.floor(elapsed / (PHASE_MS * 4));
+    running = false;
+    cancelAnimationFrame(rafId);
+    unlockScreen();
+
+    $('center').classList.add('done');
+    labelEl.textContent = 'Nicely done';
+    hintEl.textContent = IDLE_HINT;
+    setAccent('--inhale');
+    placeDot(CORNERS[0][0], CORNERS[0][1]);
+    trail.setAttribute('opacity', '0');
+    setOrb(1);
+    cyclesEl.textContent = cycles;
+    timeEl.textContent = fmt(Math.floor(elapsed / 1000));
+
+    var msg = cycles === 0
+      ? 'Less than one full cycle (16 s). Go again?'
+      : cycles + (cycles === 1 ? ' cycle' : ' cycles') + ' in ' + fmt(Math.floor(elapsed / 1000)) + '.';
+    summaryEl.textContent = msg;
+    liveEl.textContent = 'Stopped. ' + msg;
+
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    startBtn.textContent = 'Start again';
+    startBtn.focus({ preventScroll: true });
+  }
+
+  startBtn.addEventListener('click', start);
+  stopBtn.addEventListener('click', stop);
+  setOrb(1);
+
+  // ---- Theme toggle ----
+  var themeBtn = $('theme');
+  var darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+  var MOON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
+  var SUN = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
+
+  function isDark() {
+    var t = root.getAttribute('data-theme');
+    return t ? t === 'dark' : darkMQ.matches;
+  }
+  function renderThemeBtn() {
+    var dark = isDark();
+    themeBtn.innerHTML = dark ? SUN : MOON;
+    themeBtn.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+  }
+  themeBtn.addEventListener('click', function () {
+    var next = isDark() ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('box-breathing-theme', next); } catch (e) {}
+    renderThemeBtn();
+  });
+  if (darkMQ.addEventListener) darkMQ.addEventListener('change', renderThemeBtn);
+  renderThemeBtn();
+})();
+</script>
+</body>
+</html>
